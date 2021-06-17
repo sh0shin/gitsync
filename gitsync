@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+# vim: set ft=sh :
+
+# BSD 3-Clause License
+#
+# Copyright (c) 2021, Chris 'sh0shin' Frage
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+#
+# * Neither the name of the copyright holder nor the names of its
+#   contributors may be used to endorse or promote products derived from
+#   this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+set -o pipefail -eu
+
+# self, version, url
+readonly gitsync_self="${0##*/}"
+readonly gitsync_version="v0.0.1"
+readonly gitsync_url="https://sh0shin.org/gitsync"
+
+## gitsync config
+: "${gitsync_work_dir:="${GITSYNC_WORK_DIR:-"${TMPDIR:-"/tmp"}"}"}"
+
+# -R
+: "${gitsync_work_remove:="${GITSYNC_WORK_REMOVE:-false}"}"
+
+: "${gitsync_file:="${GITSYNC_FILE:-".gitsync"}"}"
+: "${gitsync_sync:="${GITSYNC_SYNC:-}"}"
+
+# -r
+: "${gitsync_repo_root:="${GITSYNC_REPO_ROOT:-}"}"
+# -s
+: "${gitsync_repo_subs:="${GITSYNC_REPO_SUBS:-}"}"
+
+: "${gitsync_git_opts:="${GITSYNC_GIT_OPTS:-""}"}"
+: "${gitsync_git_opts_all:="${GITSYNC_GIT_OPTS_ALL:-""}"}"
+: "${gitsync_git_opts_clone:="${GITSYNC_GIT_OPTS_CLONE:-""}"}"
+: "${gitsync_git_opts_commit:="${GITSYNC_GIT_OPTS_COMMIT:-""}"}"
+: "${gitsync_git_opts_config:="${GITSYNC_GIT_OPTS_CONFIG:-"--global"}"}"
+: "${gitsync_git_opts_pull:="${GITSYNC_GIT_OPTS_PULL:-""}"}"
+: "${gitsync_git_opts_push:="${GITSYNC_GIT_OPTS_PUSH:-""}"}"
+
+: "${gitsync_git_bootstrap:="${GITSYNC_GIT_BOOTSTRAP:-false}"}"
+: "${gitsync_git_name:="${GITSYNC_GIT_NAME:-}"}"
+: "${gitsync_git_email:="${GITSYNC_GIT_EMAIL:-}"}"
+: "${gitsync_git_signing:="${GITSYNC_GIT_SIGNING:-false}"}"
+: "${gitsync_git_signingkey:="${GITSYNC_GIT_SIGNINGKEY:-}"}"
+
+# gitsync_usage
+gitsync_usage() {
+  echo "$gitsync_self $gitsync_version ( $gitsync_url )"
+  echo "Usage: $gitsync_self [-Rh] -r <git-url> -s <git-url>"
+}
+
+# gitsync_help
+gitsync_help() {
+  gitsync_usage
+
+  echo "Options:"
+  echo "  -R            : Remove repositories after sync"
+  echo "  -h            : Show this help"
+  echo "  -r <git-url>  : The root git repository to sync from"
+  echo "  -s <git-url>  : The sub git reposiroty to sync to"
+}
+
+# gitsync_git_name <git-url>
+gitsync_git_name() {
+  local git_url="$1"
+  local git_name
+
+  git_name="${git_url##*/}"     # strip prefix
+  git_name="${git_name%*.git}"  # strip suffix
+
+  echo "$git_name"
+}
+
+# gitsync_git_bootstrap
+gitsync_git_bootstrap() {
+  # git config
+  if [[ $gitsync_git_bootstrap == true ]]
+  then
+    if [[ -n "$gitsync_git_name" ]] && [[ -n "$gitsync_git_email" ]]
+    then
+      git config "${gitsync_git_opts_config[@]}" user.name "$gitsync_git_name"
+      git config "${gitsync_git_opts_config[@]}" user.email "$gitsync_git_email"
+    else
+      echo "WARNING: no git name & email set"
+    fi
+
+    if [[ $gitsync_git_signing == true ]] && [[ -n "$gitsync_git_signingkey" ]]
+    then
+      git config "${gitsync_git_opts_config[@]}" user.signingkey "$gitsync_git_signingkey"
+    else
+      echo "WARNING: no git signingkey set"
+    fi
+  fi
+
+  # git options
+  # all
+  if [[ -n "$gitsync_git_opts_all" ]]
+  then
+    gitsync_git_opts_clone+="$gitsync_git_opts_all"
+    gitsync_git_opts_pull+="$gitsync_git_opts_all"
+    gitsync_git_opts_push+="$gitsync_git_opts_all"
+  fi
+
+  # commit
+  if [[ $gitsync_git_signing == true ]]
+  then
+    gitsync_git_opts_commit+="-S"
+  fi
+}
+
+# gitsync_git_get <git-url>
+gitsync_git_get() {
+  local git_url="$1"
+  local git_name
+
+  git_name="$(gitsync_git_name "$git_url")"
+
+  if [[ ! -d "${gitsync_work_dir}/${git_name}/.git" ]]
+  then
+    git "${gitsync_git_opts[@]}" clone "${gitsync_git_opts_clone[@]}" "$git_url" "${gitsync_work_dir}/${git_name}"
+  else
+    cd "${gitsync_work_dir}/${git_name}" || exit 1
+    git "${gitsync_git_opts[@]}" pull "${gitsync_git_opts_pull[@]}"
+  fi
+}
+
+# gitsync_git_sync <src-git-url> <dst-git-url>
+gitsync_git_sync() {
+  local git_src_url="$1"
+  local git_dst_url="$2"
+
+  local git_src_name
+  local git_dst_name
+
+  git_src_name="$(gitsync_git_name "$git_src_url")"
+  git_dst_name="$(gitsync_git_name "$git_dst_url")"
+
+  # check source file
+  if [[ -f "${gitsync_work_dir}/${git_src_name}/${gitsync_file}" ]]
+  then
+    while IFS='' read -r line
+    do
+      gitsync_sync+=("$line")
+    done < <(cat "${gitsync_work_dir}/${git_src_name}/${gitsync_file}")
+  fi
+
+  # merge
+  IFS=" " read -r -a gitsync_sync <<< "${gitsync_sync[*]}"
+
+  # unique
+  gitsync_sync_unique=()
+  while IFS='' read -r line
+  do
+    gitsync_sync_unique+=("$line")
+  done < <(printf "%s\n" "${gitsync_sync[@]}" | sort -u)
+
+  if [[ -z "${gitsync_sync_unique[*]}" ]]
+  then
+    echo "ERROR: no files to sync"
+    gitsync_usage
+  fi
+
+  for sync in "${gitsync_sync_unique[@]}"
+  do
+    cd "${gitsync_work_dir}/${git_src_name}" || exit 1
+
+    if [[ -e "$sync" ]]
+    then
+      git_msg=$(git log --max-count=1 --pretty="%s" "$sync")
+
+      cp -a "$sync" "${gitsync_work_dir}/${git_dst_name}/"
+      cd "${gitsync_work_dir}/${git_dst_name}"
+      git add "$sync"
+
+      git_stat=$(git status --short --porcelain "$sync")
+
+      if [[ -n "$git_stat" ]]
+      then
+        echo git commit "${gitsync_git_opts_commit[@]}" -m "$git_msg" "$sync"
+        git_push=true
+      fi
+
+      if [[ ${git_push:-false} == true ]]
+      then
+        git "${gitsync_git_opts[@]}" push
+      fi
+
+    else
+      echo "SKIP: $sync not found!"
+    fi
+  done
+
+  # remove
+  if [[ $gitsync_work_remove == true ]]
+  then
+    rm -fr "${gitsync_work_dir:?}/${git_dst_name:?}"
+  fi
+}
+
+# gitsync_main
+gitsync_main() {
+
+  while getopts ":Rhr:s:" opt
+  do
+    case $opt in
+      R) gitsync_work_remove=true;;
+      h)
+        gitsync_help
+        exit 0
+        ;;
+      r) gitsync_repo_root="$OPTARG";;
+      s) gitsync_repo_subs+=" $OPTARG";;
+      :)
+        gitsync_usage
+        exit 2
+        ;;
+      ?)
+        gitsync_usage
+        exit 2
+        ;;
+      *)
+        gitsync_usage
+        exit 2
+        ;;
+    esac
+  done
+
+  # to array
+  IFS=" " read -r -a gitsync_git_opts <<< "$gitsync_git_opts"
+  IFS=" " read -r -a gitsync_git_opts_clone <<< "$gitsync_git_opts_clone"
+  IFS=" " read -r -a gitsync_git_opts_commit <<< "$gitsync_git_opts_commit"
+  IFS=" " read -r -a gitsync_git_opts_config <<< "$gitsync_git_opts_config"
+  IFS=" " read -r -a gitsync_git_opts_pull <<< "$gitsync_git_opts_pull"
+  IFS=" " read -r -a gitsync_git_opts_push <<< "$gitsync_git_opts_push"
+  IFS=" " read -r -a gitsync_repo_subs <<< "$gitsync_repo_subs"
+
+  if [[ -z "$gitsync_repo_root" ]]
+  then
+    echo "ERROR: no root repository url set!"
+    exit 1
+  fi
+
+  if [[ -z "${gitsync_repo_subs[*]}" ]]
+  then
+    echo "ERROR: no sub repository urls set!"
+    exit 1
+  fi
+
+  gitsync_git_bootstrap
+  gitsync_git_name "$gitsync_repo_root"
+  gitsync_git_get "$gitsync_repo_root"
+
+  for sub in "${gitsync_repo_subs[@]}"
+  do
+    gitsync_git_name "$sub"
+    gitsync_git_get "$sub"
+    gitsync_git_sync "$gitsync_repo_root" "$sub"
+  done
+
+  # remove
+  if [[ $gitsync_work_remove == true ]]
+  then
+    rm -fr "${gitsync_work_dir:?}/$(gitsync_git_name "$gitsync_repo_root")"
+  fi
+}
+
+gitsync_main "$@"

@@ -1,3 +1,5 @@
 [//]: # ( vim: set ft=markdown : )
 
-# README
+# gitsync
+
+Sync files between git repositories
