@@ -1,7 +1,6 @@
 # add
-# <src>           [dst]
 .gitignore
 .editorconfig
 
-# remove
+# del
 !.stashed

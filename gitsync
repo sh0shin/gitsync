@@ -43,15 +43,18 @@ readonly gitsync_url="https://sh0shin.org/gitsync"
 
 # -R
 : "${gitsync_work_remove:="${GITSYNC_WORK_REMOVE:-false}"}"
-
+# -a
+: "${gitsync_add:="${GITSYNC_ADD:-}"}"
+# -d
+: "${gitsync_del:="${GITSYNC_DEL:-}"}"
+# -f
 : "${gitsync_file:="${GITSYNC_FILE:-".gitsync"}"}"
-: "${gitsync_sync:="${GITSYNC_SYNC:-}"}"
-
 # -r
 : "${gitsync_repo_root:="${GITSYNC_REPO_ROOT:-}"}"
 # -s
 : "${gitsync_repo_subs:="${GITSYNC_REPO_SUBS:-}"}"
 
+# git options
 : "${gitsync_git_opts:="${GITSYNC_GIT_OPTS:-""}"}"
 : "${gitsync_git_opts_all:="${GITSYNC_GIT_OPTS_ALL:-""}"}"
 : "${gitsync_git_opts_clone:="${GITSYNC_GIT_OPTS_CLONE:-""}"}"
@@ -65,11 +68,12 @@ readonly gitsync_url="https://sh0shin.org/gitsync"
 : "${gitsync_git_email:="${GITSYNC_GIT_EMAIL:-}"}"
 : "${gitsync_git_signing:="${GITSYNC_GIT_SIGNING:-false}"}"
 : "${gitsync_git_signingkey:="${GITSYNC_GIT_SIGNINGKEY:-}"}"
+: "${gitsync_git_rmmsg:="${GITSYNC_GIT_RMMSG:-"refactor: remove"}"}"
 
 # gitsync_usage
 gitsync_usage() {
   echo "$gitsync_self $gitsync_version ( $gitsync_url )"
-  echo "Usage: $gitsync_self [-Rh] -r <git-url> -s <git-url>"
+  echo "Usage: $gitsync_self [-Rh] [-r <git-url>] [-s <git-url>] [-a <file>] [-d <file>]"
 }
 
 # gitsync_help
@@ -78,6 +82,8 @@ gitsync_help() {
 
   echo "Options:"
   echo "  -R            : Remove repositories after sync"
+  echo "  -a <file>     : Add/update file"
+  echo "  -d <file>     : Delete file"
   echo "  -h            : Show this help"
   echo "  -r <git-url>  : The root git repository to sync from"
   echo "  -s <git-url>  : The sub git reposiroty to sync to"
@@ -147,6 +153,19 @@ gitsync_git_get() {
   fi
 }
 
+# gitsync_unique <array>
+gitsync_unique() {
+  local array=("$@")
+  declare -a unique
+
+  while IFS='' read -r line
+  do
+    unique+=("$line")
+  done < <(printf "%s\n" "${array[@]}" | sort -u)
+
+  echo "${unique[*]}"
+}
+
 # gitsync_git_sync <src-git-url> <dst-git-url>
 gitsync_git_sync() {
   local git_src_url="$1"
@@ -158,60 +177,82 @@ gitsync_git_sync() {
   git_src_name="$(gitsync_git_name "$git_src_url")"
   git_dst_name="$(gitsync_git_name "$git_dst_url")"
 
-  # check source file
+  # read gitsync file
   if [[ -f "${gitsync_work_dir}/${git_src_name}/${gitsync_file}" ]]
   then
     while IFS='' read -r line
     do
-      gitsync_sync+=("$line")
+      if [[ "$line" =~ ^(#.*)?$ ]]
+      then
+        continue
+      fi
+
+      if [[ "$line" =~ ^!.*$ ]]
+      then
+        gitsync_del+=("${line#\!*}")
+      else
+        gitsync_add+=("$line")
+      fi
     done < <(cat "${gitsync_work_dir}/${git_src_name}/${gitsync_file}")
   fi
 
   # merge
-  IFS=" " read -r -a gitsync_sync <<< "${gitsync_sync[*]}"
+  IFS=" " read -r -a gitsync_add <<< "${gitsync_add[*]}"
+  IFS=" " read -r -a gitsync_del <<< "${gitsync_del[*]}"
 
   # unique
-  gitsync_sync_unique=()
-  while IFS='' read -r line
-  do
-    gitsync_sync_unique+=("$line")
-  done < <(printf "%s\n" "${gitsync_sync[@]}" | sort -u)
+  gitsync_add_uniq="$(gitsync_unique "${gitsync_add[@]}")"
+  gitsync_del_uniq="$(gitsync_unique "${gitsync_del[@]}")"
 
-  if [[ -z "${gitsync_sync_unique[*]}" ]]
+  if [[ -z "$gitsync_add_uniq" ]] && [[ -z "$gitsync_del_uniq" ]]
   then
     echo "ERROR: no files to sync"
     gitsync_usage
   fi
 
-  for sync in "${gitsync_sync_unique[@]}"
+  git_push=false
+  for add in $gitsync_add_uniq
   do
     cd "${gitsync_work_dir}/${git_src_name}" || exit 1
 
-    if [[ -e "$sync" ]]
+    if [[ -e "$add" ]]
     then
-      git_msg=$(git log --max-count=1 --pretty="%s" "$sync")
+      git_msg=$(git log --max-count=1 --pretty="%s" "$add")
 
-      cp -a "$sync" "${gitsync_work_dir}/${git_dst_name}/"
+      cp -a "$add" "${gitsync_work_dir}/${git_dst_name}/"
       cd "${gitsync_work_dir}/${git_dst_name}"
-      git add "$sync"
+      git add "$add"
 
-      git_stat=$(git status --short --porcelain "$sync")
+      git_stat=$(git status --short --porcelain "$add")
 
       if [[ -n "$git_stat" ]]
       then
-        echo git commit "${gitsync_git_opts_commit[@]}" -m "$git_msg" "$sync"
+        git commit "${gitsync_git_opts_commit[@]}" -m "$git_msg" "$add"
         git_push=true
       fi
-
-      if [[ ${git_push:-false} == true ]]
-      then
-        git "${gitsync_git_opts[@]}" push
-      fi
-
     else
-      echo "SKIP: $sync not found!"
+      echo "SKIP: $add not found!"
     fi
   done
+
+  for del in $gitsync_del_uniq
+  do
+    cd "${gitsync_work_dir}/${git_dst_name}" || exit 1
+
+    if [[ -e "$del" ]]
+    then
+      git rm -r "$del"
+      git commit "${gitsync_git_opts_commit[@]}" -m "$gitsync_git_rmmsg" "$del"
+    else
+      echo "SKIP: $del not found!"
+    fi
+  done
+
+  if [[ $git_push == true ]]
+  then
+    cd "${gitsync_work_dir}/${git_dst_name}" || exit 1
+    git "${gitsync_git_opts[@]}" push
+  fi
 
   # remove
   if [[ $gitsync_work_remove == true ]]
@@ -223,10 +264,12 @@ gitsync_git_sync() {
 # gitsync_main
 gitsync_main() {
 
-  while getopts ":Rhr:s:" opt
+  while getopts ":Rha:d:r:s:" opt
   do
     case $opt in
       R) gitsync_work_remove=true;;
+      a) gitsync_add+=("$OPTARG");;
+      d) gitsync_del+=("$OPTARG");;
       h)
         gitsync_help
         exit 0
