@@ -36,6 +36,10 @@ __pycache__/
 # ruby
 Gemfile.lock
 
+# shc
+*.x
+*.x.c
+
 # terraform
 **/.terraform/
 **/terraform.tfstate.d/
