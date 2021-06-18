@@ -257,6 +257,7 @@ gitsync_git_sync() {
   # remove
   if [[ $gitsync_work_remove == true ]]
   then
+    cd "${gitsync_work_dir}" || exit 1
     rm -fr "${gitsync_work_dir:?}/${git_dst_name:?}"
   fi
 }
@@ -326,6 +327,7 @@ gitsync_main() {
   # remove
   if [[ $gitsync_work_remove == true ]]
   then
+    cd "${gitsync_work_dir}" || exit 1
     rm -fr "${gitsync_work_dir:?}/$(gitsync_git_name "$gitsync_repo_root")"
   fi
 }
